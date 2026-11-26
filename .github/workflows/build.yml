@@ -1,0 +1,77 @@
+name: Build Mainline Kernel (veux)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - veux
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build arm64 (veux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison ccache dwarves flex gcc-aarch64-linux-gnu \
+            libelf-dev libssl-dev make
+
+      - name: Configure ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-veux-${{ github.sha }}
+          restore-keys: |
+            ccache-veux-
+
+      - name: Setup ccache Environment
+        run: |
+          ccache --set-config=max_size=2G
+          ccache --zero-stats
+
+      - name: Configure Kernel (defconfig + veux.config)
+        run: |
+          ARCH=arm64 ./scripts/kconfig/merge_config.sh -m \
+            arch/arm64/configs/defconfig \
+            arch/arm64/configs/veux.config
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-gnu-" olddefconfig
+
+      - name: Build Image, Image.gz, and DTBs
+        run: |
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-gnu-" \
+            Image Image.gz dtbs
+          cat arch/arm64/boot/Image.gz \
+            arch/arm64/boot/dts/qcom/sm6375-xiaomi-veux.dtb \
+            > arch/arm64/boot/Image.gz-dtb
+          ccache --show-stats
+
+      - name: Stage Artifacts
+        run: |
+          mkdir -p out
+          cp arch/arm64/boot/Image out/Image
+          cp arch/arm64/boot/Image.gz out/Image.gz
+          cp arch/arm64/boot/Image.gz-dtb out/Image.gz-dtb
+          cp arch/arm64/boot/dts/qcom/sm6375-xiaomi-veux.dtb out/sm6375-xiaomi-veux.dtb
+          cp vmlinux out/vmlinux
+          cp .config out/.config
+          cp System.map out/System.map
+          ls -lh out/
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: veux-mainline-${{ github.sha }}
+          path: out/
+          retention-days: 14
